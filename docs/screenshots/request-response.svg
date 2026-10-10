@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="640" viewBox="0 0 1100 640" role="img" aria-labelledby="title desc">
+  <title id="title">Request and response inspection mockup</title>
+  <desc id="desc">Illustrative detail panel with request Raw, JWT, and JavaScript Stack tabs and a response body.</desc>
+  <rect width="1100" height="640" fill="#e9edf2"/>
+  <rect x="0" y="0" width="1100" height="42" fill="#26384a"/>
+  <text x="18" y="27" fill="#fff" font-family="Segoe UI, Arial" font-size="17" font-weight="600">Request / Response details</text>
+  <text x="1078" y="27" fill="#d4dde6" font-family="Segoe UI, Arial" font-size="12" text-anchor="end">ILLUSTRATIVE MOCKUP</text>
+  <rect x="18" y="58" width="1064" height="330" rx="5" fill="#fff" stroke="#c6d0da"/>
+  <text x="38" y="86" fill="#26384a" font-family="Segoe UI, Arial" font-size="16" font-weight="600">Request</text>
+  <rect x="34" y="98" width="1032" height="40" fill="#f1f4f7"/>
+  <rect x="43" y="105" width="470" height="27" rx="3" fill="#fff" stroke="#bdc8d2"/>
+  <text x="54" y="124" fill="#71808d" font-family="Segoe UI, Arial" font-size="12">Search request content</text>
+  <rect x="522" y="104" width="28" height="28" rx="3" fill="#fff" stroke="#bdc8d2"/><path d="M530 123L536 113L542 123" fill="none" stroke="#34495e" stroke-width="2"/>
+  <rect x="557" y="104" width="72" height="28" rx="3" fill="#286da8"/><text x="593" y="123" fill="#fff" font-family="Segoe UI, Arial" font-size="12" text-anchor="middle">Search</text>
+  <rect x="636" y="104" width="28" height="28" rx="3" fill="#fff" stroke="#bdc8d2"/><path d="M644 113L650 123L656 113" fill="none" stroke="#34495e" stroke-width="2"/>
+  <rect x="34" y="139" width="1032" height="35" fill="#fff"/>
+  <text x="49" y="162" fill="#6d7b89" font-family="Segoe UI, Arial" font-size="13">Raw</text><text x="94" y="162" fill="#6d7b89" font-family="Segoe UI, Arial" font-size="13">JWT</text>
+  <rect x="134" y="139" width="145" height="35" fill="#e9f2fa"/><text x="146" y="162" fill="#1d6399" font-family="Segoe UI, Arial" font-size="13" font-weight="600">JavaScript Stack</text>
+  <rect x="34" y="174" width="1032" height="196" fill="#fbfcfd"/>
+  <text x="53" y="205" fill="#314456" font-family="Consolas, monospace" font-size="13">at submitLogin (https://app.example.com/js/login.js:48:13)</text>
+  <text x="53" y="232" fill="#314456" font-family="Consolas, monospace" font-size="13">at HTMLButtonElement.onClick (https://app.example.com/js/app.js:122:9)</text>
+  <text x="53" y="259" fill="#314456" font-family="Consolas, monospace" font-size="13">at dispatchEvent (https://app.example.com/js/vendor.js:5:4210)</text>
+  <text x="53" y="298" fill="#788591" font-family="Segoe UI, Arial" font-size="12">Stack frames are populated when the HAR contains initiator stack metadata.</text>
+  <rect x="18" y="402" width="1064" height="220" rx="5" fill="#fff" stroke="#c6d0da"/>
+  <text x="38" y="430" fill="#26384a" font-family="Segoe UI, Arial" font-size="16" font-weight="600">Response</text>
+  <rect x="34" y="443" width="1032" height="36" fill="#f1f4f7"/>
+  <rect x="43" y="448" width="470" height="26" rx="3" fill="#fff" stroke="#bdc8d2"/><text x="54" y="466" fill="#71808d" font-family="Segoe UI, Arial" font-size="12">Search response content</text>
+  <rect x="34" y="479" width="1032" height="35" fill="#fff"/><text x="49" y="502" fill="#1d6399" font-family="Segoe UI, Arial" font-size="13" font-weight="600">Raw</text><text x="94" y="502" fill="#6d7b89" font-family="Segoe UI, Arial" font-size="13">JWT</text>
+  <rect x="34" y="514" width="1032" height="92" fill="#fbfcfd"/>
+  <text x="53" y="541" fill="#314456" font-family="Consolas, monospace" font-size="13">HTTP/2 401 Unauthorized</text>
+  <text x="53" y="566" fill="#314456" font-family="Consolas, monospace" font-size="13">Response Body: {"error":"token expired"}</text>
+</svg>
