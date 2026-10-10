@@ -266,7 +266,6 @@
             timelineButton.Text = "Timeline";
             timelineButton.UseVisualStyleBackColor = true;
             timelineButton.Click += timelineButton_Click;
-            // 
             // exportButton
             // 
             exportButton.Location = new Point(331, 32);

@@ -61,6 +61,7 @@ namespace HARFileInvestigator
             var requestQueryString = ReadNameValueArray(request, "queryString");
             var responseHeaders = ReadNameValueArray(response, "headers");
             var additionalFields = BuildAdditionalFields(entry, requestHeaders, responseHeaders);
+            var javaScriptStack = ReadJavaScriptStack(entry);
 
             var requestText = BuildRequestText(
                 method,
@@ -105,10 +106,148 @@ namespace HARFileInvestigator
                 DurationMs = durationMs,
                 IpAddress = serverIpAddress,
                 AdditionalFields = additionalFields,
+                JavaScriptStack = javaScriptStack,
                 RequestText = requestText,
                 ResponseText = responseText,
                 SearchText = searchText
             };
+        }
+
+        private static string ReadJavaScriptStack(JsonElement entry)
+        {
+            if (!TryGetProperty(entry, "_initiator", out var initiator) &&
+                !TryGetProperty(entry, "initiator", out initiator))
+            {
+                return string.Empty;
+            }
+
+            if (!TryGetProperty(initiator, "stack", out var stack))
+            {
+                return string.Empty;
+            }
+
+            var lines = new List<string>();
+            AppendStackFrames(stack, lines);
+            return string.Join(Environment.NewLine, lines);
+        }
+
+        private static void AppendStackFrames(JsonElement stack, List<string> lines)
+        {
+            if (stack.ValueKind == JsonValueKind.String)
+            {
+                var text = stack.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    lines.Add(text.TrimEnd());
+                }
+                return;
+            }
+
+            if (TryGetProperty(stack, "description", out var description) && description.ValueKind == JsonValueKind.String)
+            {
+                var text = description.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    lines.Add(text.TrimEnd());
+                }
+            }
+
+            if (TryGetProperty(stack, "callFrames", out var frames) && frames.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var frame in frames.EnumerateArray())
+                {
+                    var formattedFrame = FormatStackFrame(frame);
+                    if (!string.IsNullOrWhiteSpace(formattedFrame))
+                    {
+                        lines.Add(formattedFrame);
+                    }
+                }
+            }
+            else if (TryGetProperty(stack, "frames", out var alternateFrames) && alternateFrames.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var frame in alternateFrames.EnumerateArray())
+                {
+                    var formattedFrame = FormatStackFrame(frame);
+                    if (!string.IsNullOrWhiteSpace(formattedFrame))
+                    {
+                        lines.Add(formattedFrame);
+                    }
+                }
+            }
+
+            if (TryGetProperty(stack, "parent", out var parent) && parent.ValueKind == JsonValueKind.Object)
+            {
+                var asyncCause = GetString(stack, "parentDescription");
+                if (!string.IsNullOrWhiteSpace(asyncCause))
+                {
+                    lines.Add($"--- {asyncCause} ---");
+                }
+
+                AppendStackFrames(parent, lines);
+            }
+        }
+
+        private static string FormatStackFrame(JsonElement frame)
+        {
+            var functionName = GetString(frame, "functionName");
+            var url = GetString(frame, "url");
+            var hasLineNumber = TryGetIntValue(frame, "lineNumber", out var lineNumber);
+            var hasColumnNumber = TryGetIntValue(frame, "columnNumber", out var columnNumber);
+            if (string.IsNullOrWhiteSpace(functionName))
+            {
+                functionName = "(anonymous)";
+            }
+
+            var location = url;
+            if (hasLineNumber)
+            {
+                location += $":{lineNumber + 1}";
+                if (hasColumnNumber)
+                {
+                    location += $":{columnNumber + 1}";
+                }
+            }
+
+            return string.IsNullOrWhiteSpace(location)
+                ? $"    at {functionName}"
+                : $"    at {functionName} ({location})";
+        }
+
+        private static bool TryGetIntValue(JsonElement parent, string propertyName, out int result)
+        {
+            result = 0;
+            if (!TryGetProperty(parent, propertyName, out var value))
+            {
+                return false;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out result))
+            {
+                return true;
+            }
+
+            return value.ValueKind == JsonValueKind.String &&
+                   int.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
+        }
+
+        private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)
+        {
+            value = default;
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static Dictionary<string, string> BuildAdditionalFields(

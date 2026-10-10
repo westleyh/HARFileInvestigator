@@ -16,8 +16,6 @@ namespace HARFileInvestigator
         private readonly BindingList<HarTraceEntry> _filteredEntries = [];
         private readonly List<int> _matchRowIndices = [];
         private readonly Dictionary<string, DataGridViewColumn> _dynamicColumns = new(StringComparer.OrdinalIgnoreCase);
-        private readonly List<(string Name, string Header)> _columnMenuEntries = [];
-        private readonly Dictionary<string, DataGridViewColumn> _columnLookupCache = new(StringComparer.Ordinal);
         private List<TagDefinition> _tagDefinitions = [];
         private List<HarTraceEntry> _allEntries = [];
         private bool _isFilterEnabled;
@@ -25,28 +23,32 @@ namespace HARFileInvestigator
         private readonly string _settingsFilePath;
         private AppUiSettings _settings = new();
         private int _currentMatchIndex = -1;
+        private int _savedSessionSplitterDistance;
+        private bool _hasSavedSessionSplitterDistance;
+        private string? _cachedQueryText;
+        private HarQueryExpression? _parsedQuery;
+        private string? _queryParseError;
+        private bool _hasCachedQueryParse;
+        private bool _cachedQueryIsValid;
         private TimelineDialog? _timelineDialog;
-        private readonly ContextMenuStrip _columnMenu = new();
-        private readonly ToolStripTextBox _columnMenuSearchBox = new();
-        private bool _suppressColumnMenuSearchChange;
-        private string _lastAppliedColumnMenuSearch = string.Empty;
         private readonly ContextMenuStrip _rowContextMenu = new();
         private readonly ToolStripMenuItem _rowTagMenuItem = new("Tag");
 
-        private RichTextBox? _activeRequestSearchBox;
-        private int _requestSearchPosition;
-        private RichTextBox? _activeResponseSearchBox;
-        private int _responseSearchPosition;
-        private TextBox? _requestPaneSearchTextBox;
-        private TextBox? _responsePaneSearchTextBox;
+        private RequestResponseControl? requestResponseControl;
 
         public Form1()
         {
             InitializeComponent();
+
+            requestResponseControl = new RequestResponseControl();
+            requestResponseControl.TearOutStateChanged += RequestResponseControl_TearOutStateChanged;
+            rightSplitContainer.Panel1.Controls.Clear();
+            rightSplitContainer.Panel2.Controls.Clear();
+            rightSplitContainer.Panel2Collapsed = true;
+            rightSplitContainer.Panel1.Controls.Add(requestResponseControl);
+
             ConfigureFilterButtonVisual();
-            ConfigureColumnMenu();
             ConfigureRowContextMenu();
-            ConfigurePaneSearchUi();
             ConfigureQueryBoxShortcuts();
             InitializeGrid();
 
@@ -115,37 +117,6 @@ namespace HARFileInvestigator
             };
             g.FillPolygon(brush, top);
             g.FillRectangle(brush, stemTopX, midY, stemWidth, stemHeight);
-
-            return bitmap;
-        }
-
-        private static Bitmap CreateChevronIcon(bool next, int size)
-        {
-            var bitmap = new Bitmap(size, size);
-            using var g = Graphics.FromImage(bitmap);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using var pen = new Pen(Color.FromArgb(70, 70, 70), Math.Max(2f, size / 5f));
-
-            var inset = Math.Max(2f, size * 0.22f);
-            var midY = size / 2f;
-            if (next)
-            {
-                g.DrawLines(pen,
-                [
-                    new PointF(inset, inset),
-                    new PointF(size - inset, midY),
-                    new PointF(inset, size - inset)
-                ]);
-            }
-            else
-            {
-                g.DrawLines(pen,
-                [
-                    new PointF(size - inset, inset),
-                    new PointF(inset, midY),
-                    new PointF(size - inset, size - inset)
-                ]);
-            }
 
             return bitmap;
         }
@@ -227,7 +198,15 @@ namespace HARFileInvestigator
                 Width = 180
             });
 
-            RebuildColumnMenuEntryTable();
+            entriesGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = nameof(HarTraceEntry.JavaScriptStack),
+                DataPropertyName = nameof(HarTraceEntry.JavaScriptStack),
+                HeaderText = "JavaScript Stack",
+                Width = 500,
+                Visible = false
+            });
+
         }
 
         private async void openButton_Click(object sender, EventArgs e)
@@ -397,8 +376,15 @@ namespace HARFileInvestigator
 
         private void applyQueryButton_Click(object sender, EventArgs e)
         {
+            var queryText = GetQueryText();
+            if (!TryGetParsedQuery(queryText, out _, out var parseError))
+            {
+                MessageBox.Show(this, $"Invalid query: {parseError}", "Query", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
             ApplyFilters();
-            AddQueryToHistory(GetQueryText());
+            AddQueryToHistory(queryText);
             SaveSettingsFromUi();
         }
 
@@ -549,6 +535,40 @@ namespace HARFileInvestigator
             UpdateTimelineFromHighlights();
         }
 
+        private void RequestResponseControl_TearOutStateChanged(bool isTornOut)
+        {
+            if (isTornOut)
+            {
+                if (splitContainer.Panel2Collapsed)
+                {
+                    return;
+                }
+
+                _savedSessionSplitterDistance = splitContainer.SplitterDistance;
+                _hasSavedSessionSplitterDistance = true;
+                splitContainer.Panel2Collapsed = true;
+                return;
+            }
+
+            if (!splitContainer.Panel2Collapsed)
+            {
+                return;
+            }
+
+            splitContainer.Panel2Collapsed = false;
+            if (_hasSavedSessionSplitterDistance)
+            {
+                var minDistance = splitContainer.Panel1MinSize;
+                var maxDistance = splitContainer.Width - splitContainer.SplitterWidth - splitContainer.Panel2MinSize;
+                if (maxDistance >= minDistance)
+                {
+                    splitContainer.SplitterDistance = Math.Clamp(_savedSessionSplitterDistance, minDistance, maxDistance);
+                }
+            }
+
+            _hasSavedSessionSplitterDistance = false;
+        }
+
         private void TimelineDialog_DotClicked(object? sender, int rowIndex)
         {
             if (rowIndex < 0 || rowIndex >= entriesGrid.Rows.Count)
@@ -581,230 +601,35 @@ namespace HARFileInvestigator
             SaveSettingsFromUi();
         }
 
-        private void ConfigureColumnMenu()
-        {
-            _columnMenu.ShowImageMargin = false;
-            _columnMenu.MaximumSize = new Size(460, 560);
-            _columnMenu.ItemClicked += ColumnMenu_ItemClicked;
-            _columnMenuSearchBox.AutoSize = false;
-            _columnMenuSearchBox.Width = 240;
-            _columnMenuSearchBox.ToolTipText = "Search columns";
-            _columnMenuSearchBox.TextChanged += (_, _) =>
-            {
-                if (_suppressColumnMenuSearchChange)
-                {
-                    return;
-                }
-
-                var text = _columnMenuSearchBox.Text?.Trim() ?? string.Empty;
-                if (text.Length is > 0 and < 3)
-                {
-                    if (_lastAppliedColumnMenuSearch.Length >= 3)
-                    {
-                        _lastAppliedColumnMenuSearch = string.Empty;
-                        BuildColumnMenuItems(string.Empty);
-                    }
-                    return;
-                }
-
-                if (string.Equals(_lastAppliedColumnMenuSearch, text, StringComparison.Ordinal))
-                {
-                    return;
-                }
-
-                _lastAppliedColumnMenuSearch = text;
-                BuildColumnMenuItems(text);
-            };
-        }
-
         private void ConfigureRowContextMenu()
         {
             _rowContextMenu.Opening += RowContextMenu_Opening;
             entriesGrid.ContextMenuStrip = _rowContextMenu;
         }
 
-        private void ConfigurePaneSearchUi()
-        {
-            AttachPaneSearchBar(requestGroupBox, requestTabControl, true);
-            AttachPaneSearchBar(responseGroupBox, responseTabControl, false);
-        }
-
-        private void AttachPaneSearchBar(GroupBox host, TabControl tabControl, bool isRequest)
-        {
-            if (host.Tag is TableLayoutPanel)
-            {
-                return;
-            }
-
-            var panel = new Panel
-            {
-                Dock = DockStyle.Fill,
-                Height = 36,
-                Padding = new Padding(2, 2, 2, 2)
-            };
-
-            var searchBox = new TextBox
-            {
-                Left = 4,
-                Top = 2,
-                Width = Math.Max(140, host.Width - 130),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
-            };
-
-            if (isRequest)
-            {
-                _requestPaneSearchTextBox = searchBox;
-            }
-            else
-            {
-                _responsePaneSearchTextBox = searchBox;
-            }
-
-            var prevButton = new Button
-            {
-                Width = searchBox.PreferredHeight,
-                Height = searchBox.PreferredHeight,
-                Top = 2,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
-            };
-            prevButton.Image = CreateChevronIcon(false, Math.Max(12, searchBox.PreferredHeight - 8));
-            prevButton.Text = string.Empty;
-
-            var nextButton = new Button
-            {
-                Width = searchBox.PreferredHeight,
-                Height = searchBox.PreferredHeight,
-                Top = 2,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
-            };
-            nextButton.Image = CreateChevronIcon(true, Math.Max(12, searchBox.PreferredHeight - 8));
-            nextButton.Text = string.Empty;
-
-            var copyButton = new Button
-            {
-                Text = "Copy",
-                Width = 52,
-                Height = 24,
-                Top = 2,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
-            };
-
-            prevButton.Left = Math.Max(0, host.Width - (copyButton.Width + nextButton.Width + prevButton.Width + 10));
-            nextButton.Left = prevButton.Right + 2;
-            copyButton.Left = Math.Max(0, host.Width - 56);
-
-            host.Resize += (_, _) =>
-            {
-                searchBox.Width = Math.Max(140, host.Width - 130);
-                prevButton.Left = Math.Max(0, host.Width - (copyButton.Width + nextButton.Width + prevButton.Width + 10));
-                nextButton.Left = prevButton.Right + 2;
-                copyButton.Left = Math.Max(0, host.Width - 56);
-            };
-
-            prevButton.Click += (_, _) => SearchPaneText(isRequest, searchBox.Text, forward: false);
-            nextButton.Click += (_, _) => SearchPaneText(isRequest, searchBox.Text, forward: true);
-            searchBox.KeyDown += (_, e) =>
-            {
-                if (e.KeyCode != Keys.Enter)
-                {
-                    return;
-                }
-
-                SearchPaneText(isRequest, searchBox.Text, forward: true);
-                e.SuppressKeyPress = true;
-            };
-            copyButton.Click += (_, _) => CopyPaneText(isRequest);
-
-            tabControl.Dock = DockStyle.Fill;
-
-            var layout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 2
-            };
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-
-            tabControl.Parent?.Controls.Remove(tabControl);
-            layout.Controls.Add(panel, 0, 0);
-            layout.Controls.Add(tabControl, 0, 1);
-            host.Controls.Add(layout);
-            host.Tag = layout;
-
-            panel.Controls.Add(searchBox);
-            panel.Controls.Add(prevButton);
-            panel.Controls.Add(nextButton);
-            panel.Controls.Add(copyButton);
-        }
-
-        private void CopyPaneText(bool isRequest)
-        {
-            var box = isRequest ? GetActiveRequestSearchBox() : GetActiveResponseSearchBox();
-            if (box is null || string.IsNullOrEmpty(box.Text))
-            {
-                return;
-            }
-
-            Clipboard.SetText(box.Text);
-        }
-
-        private void SearchPaneText(bool isRequest, string term, bool forward)
-        {
-            if (string.IsNullOrWhiteSpace(term))
-            {
-                return;
-            }
-
-            var box = isRequest ? GetActiveRequestSearchBox() : GetActiveResponseSearchBox();
-            if (box is null || string.IsNullOrEmpty(box.Text))
-            {
-                return;
-            }
-
-            var currentPosition = isRequest ? _requestSearchPosition : _responseSearchPosition;
-            var comparison = StringComparison.OrdinalIgnoreCase;
-            var index = forward
-                ? box.Text.IndexOf(term, Math.Max(0, currentPosition), comparison)
-                : box.Text.LastIndexOf(term, Math.Max(0, Math.Min(currentPosition, box.Text.Length - 1)), comparison);
-
-            if (index < 0)
-            {
-                currentPosition = forward ? 0 : box.Text.Length - 1;
-                index = forward
-                    ? box.Text.IndexOf(term, currentPosition, comparison)
-                    : box.Text.LastIndexOf(term, currentPosition, comparison);
-            }
-
-            if (index < 0)
-            {
-                return;
-            }
-
-            box.Focus();
-            box.SelectionStart = index;
-            box.SelectionLength = term.Length;
-            box.ScrollToCaret();
-
-            if (isRequest)
-            {
-                _requestSearchPosition = forward ? index + term.Length : Math.Max(0, index - 1);
-                _activeRequestSearchBox = box;
-            }
-            else
-            {
-                _responseSearchPosition = forward ? index + term.Length : Math.Max(0, index - 1);
-                _activeResponseSearchBox = box;
-            }
-        }
-
         private RichTextBox? GetActiveRequestSearchBox()
         {
+            if (requestResponseControl is not null)
+            {
+                return requestResponseControl.RequestTabControl.SelectedTab == requestResponseControl.RequestJwtTabPage
+                    ? requestResponseControl.RequestJwtTextBox
+                    : requestResponseControl.RequestTabControl.SelectedTab == requestResponseControl.RequestJavaScriptStackTabPage
+                        ? requestResponseControl.RequestJavaScriptStackTextBox
+                        : requestResponseControl.RequestTextBox;
+            }
+
             return requestTabControl.SelectedTab == requestJwtTabPage ? requestJwtTextBox : requestTextBox;
         }
 
         private RichTextBox? GetActiveResponseSearchBox()
         {
+            if (requestResponseControl is not null)
+            {
+                return requestResponseControl.ResponseTabControl.SelectedTab == requestResponseControl.ResponseJwtTabPage
+                    ? requestResponseControl.ResponseJwtTextBox
+                    : requestResponseControl.ResponseTextBox;
+            }
+
             return responseTabControl.SelectedTab == responseJwtTabPage ? responseJwtTextBox : responseTextBox;
         }
 
@@ -933,74 +758,26 @@ namespace HARFileInvestigator
                 return;
             }
 
-            _suppressColumnMenuSearchChange = true;
-            _columnMenuSearchBox.Text = string.Empty;
-            _suppressColumnMenuSearchChange = false;
-            _lastAppliedColumnMenuSearch = string.Empty;
-            BuildColumnMenuItems(string.Empty);
-            _columnMenu.Show(Cursor.Position);
-            BeginInvoke(() => _columnMenuSearchBox.Focus());
-        }
-
-        private void BuildColumnMenuItems(string? searchText)
-        {
-            _columnMenu.SuspendLayout();
-            _columnMenu.Items.Clear();
-
-            _columnMenu.Items.Add(_columnMenuSearchBox);
-            _columnMenu.Items.Add(new ToolStripSeparator());
-
-            var filter = searchText?.Trim() ?? string.Empty;
-            var applyFilter = filter.Length >= 3;
-
-            var filteredEntries = !applyFilter
-                ? _columnMenuEntries
-                : _columnMenuEntries
-                    .Where(x => x.Header.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
-                                x.Name.Contains(filter, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-            foreach (var entry in filteredEntries)
-            {
-                if (!_columnLookupCache.TryGetValue(entry.Name, out var column))
-                {
-                    continue;
-                }
-
-                var item = new ToolStripMenuItem(entry.Header)
-                {
-                    Name = entry.Name,
-                    Checked = column.Visible,
-                    CheckOnClick = false
-                };
-                _columnMenu.Items.Add(item);
-            }
-            _columnMenu.ResumeLayout();
-        }
-
-        private void ColumnMenu_ItemClicked(object? sender, ToolStripItemClickedEventArgs e)
-        {
-            if (e.ClickedItem is not ToolStripMenuItem menuItem)
-            {
-                return;
-            }
-
-            var column = entriesGrid.Columns
+            var columns = entriesGrid.Columns
                 .Cast<DataGridViewColumn>()
-                .FirstOrDefault(x => x.Name == menuItem.Name);
-            if (column is null)
+                .Select(x => (x.Name, x.HeaderText))
+                .ToList();
+            var visibleColumns = entriesGrid.Columns
+                .Cast<DataGridViewColumn>()
+                .Where(x => x.Visible)
+                .Select(x => x.Name)
+                .ToHashSet(StringComparer.Ordinal);
+
+            using var dialog = new ColumnSelectionDialog(columns, visibleColumns);
+            if (dialog.ShowDialog(this) != DialogResult.OK)
             {
                 return;
             }
 
-            var visibleCount = entriesGrid.Columns.Cast<DataGridViewColumn>().Count(x => x.Visible);
-            if (column.Visible && visibleCount <= 1)
+            foreach (DataGridViewColumn column in entriesGrid.Columns)
             {
-                return;
+                column.Visible = dialog.SelectedColumnNames.Contains(column.Name);
             }
-
-            column.Visible = !column.Visible;
-            BuildColumnMenuItems(_columnMenuSearchBox.Text);
         }
 
         private void RebuildDynamicColumns()
@@ -1036,18 +813,6 @@ namespace HARFileInvestigator
                 entriesGrid.Columns.Add(column);
             }
 
-            RebuildColumnMenuEntryTable();
-        }
-
-        private void RebuildColumnMenuEntryTable()
-        {
-            _columnMenuEntries.Clear();
-            _columnLookupCache.Clear();
-            foreach (DataGridViewColumn column in entriesGrid.Columns)
-            {
-                _columnMenuEntries.Add((column.Name, column.HeaderText));
-                _columnLookupCache[column.Name] = column;
-            }
         }
 
         private void EntriesGrid_CellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
@@ -1178,10 +943,21 @@ namespace HARFileInvestigator
 
         private void ApplyQueryHighlightsToPanes(string queryText)
         {
-            HighlightInPane(requestTextBox, queryText);
-            HighlightInPane(responseTextBox, queryText);
-            HighlightInPane(requestJwtTextBox, queryText);
-            HighlightInPane(responseJwtTextBox, queryText);
+            if (requestResponseControl is not null)
+            {
+                HighlightInPane(requestResponseControl.RequestTextBox, queryText);
+                HighlightInPane(requestResponseControl.ResponseTextBox, queryText);
+                HighlightInPane(requestResponseControl.RequestJwtTextBox, queryText);
+                HighlightInPane(requestResponseControl.ResponseJwtTextBox, queryText);
+                HighlightInPane(requestResponseControl.RequestJavaScriptStackTextBox, queryText);
+            }
+            else
+            {
+                HighlightInPane(requestTextBox, queryText);
+                HighlightInPane(responseTextBox, queryText);
+                HighlightInPane(requestJwtTextBox, queryText);
+                HighlightInPane(responseJwtTextBox, queryText);
+            }
         }
 
         private void HighlightInPane(RichTextBox box, string query)
@@ -1263,12 +1039,12 @@ namespace HARFileInvestigator
                 return;
             }
 
-            if (_requestPaneSearchTextBox is { Text.Length: 0 })
+            if (requestResponseControl is not null && string.IsNullOrEmpty(requestResponseControl.RequestSearchText))
             {
                 MarkFirstQueryOccurrence(GetActiveRequestSearchBox(), query);
             }
 
-            if (_responsePaneSearchTextBox is { Text.Length: 0 })
+            if (requestResponseControl is not null && string.IsNullOrEmpty(requestResponseControl.ResponseSearchText))
             {
                 MarkFirstQueryOccurrence(GetActiveResponseSearchBox(), query);
             }
@@ -1349,169 +1125,87 @@ namespace HARFileInvestigator
             nextMatchButton.Enabled = hasMatches;
         }
 
-        private static bool MatchesQuery(HarTraceEntry entry, string queryText)
+        private bool MatchesQuery(HarTraceEntry entry, string queryText)
         {
-            var tokens = TokenizeQuery(queryText);
-            if (tokens.Count == 0)
+            return TryGetParsedQuery(queryText, out var expression, out _) && expression!.Matches(entry);
+        }
+
+        private bool TryGetParsedQuery(string queryText, out HarQueryExpression? expression, out string? error)
+        {
+            if (!_hasCachedQueryParse || !string.Equals(_cachedQueryText, queryText, StringComparison.Ordinal))
             {
-                return true;
+                _hasCachedQueryParse = true;
+                _cachedQueryText = queryText;
+                _cachedQueryIsValid = HarQueryParser.TryParse(queryText, out _parsedQuery, out _queryParseError);
             }
 
-            var groupSatisfied = true;
-            var anyGroupMatched = false;
-
-            foreach (var token in tokens)
-            {
-                if (string.Equals(token, "or", StringComparison.OrdinalIgnoreCase))
-                {
-                    anyGroupMatched |= groupSatisfied;
-                    groupSatisfied = true;
-                    continue;
-                }
-
-                if (string.Equals(token, "and", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                groupSatisfied &= EvaluateTerm(entry, token);
-            }
-
-            anyGroupMatched |= groupSatisfied;
-            return anyGroupMatched;
-        }
-
-        private static List<string> TokenizeQuery(string query)
-        {
-            var matches = Regex.Matches(query, "\"[^\"]*\"|\\S+");
-            return matches.Select(m => m.Value).ToList();
-        }
-
-        private static bool EvaluateTerm(HarTraceEntry entry, string token)
-        {
-            var isNegated = token.StartsWith('!');
-            var rawToken = isNegated ? token[1..] : token;
-
-            var result = EvaluateRawTerm(entry, rawToken);
-            return isNegated ? !result : result;
-        }
-
-        private static bool EvaluateRawTerm(HarTraceEntry entry, string token)
-        {
-            var match = Regex.Match(token, "^(?<field>[a-zA-Z_][a-zA-Z0-9_]*)(?<op><=|>=|!=|=|:|<|>)(?<value>.+)$");
-            if (!match.Success)
-            {
-                return entry.SearchText.Contains(Unquote(token), StringComparison.OrdinalIgnoreCase);
-            }
-
-            var field = match.Groups["field"].Value.ToLowerInvariant();
-            var op = match.Groups["op"].Value;
-            var value = Unquote(match.Groups["value"].Value);
-
-            return field switch
-            {
-                "method" => CompareString(entry.Method, op, value),
-                "host" => CompareString(entry.Host, op, value),
-                "url" => CompareString(entry.Url, op, value),
-                "mime" or "mimetype" => CompareString(entry.MimeType, op, value),
-                "ip" => CompareString(entry.IpAddress, op, value),
-                "tag" or "tags" => CompareString(entry.Tags, op, value),
-                "status" => CompareInt(entry.Status, op, value),
-                "time" or "duration" => CompareDouble(entry.DurationMs, op, value),
-                "request" => CompareString(entry.RequestText, op, value),
-                "response" => CompareString(entry.ResponseText, op, value),
-                "text" => CompareString(entry.SearchText, op, value),
-                _ => entry.AdditionalFields.TryGetValue(field, out var additionalValue)
-                    ? CompareString(additionalValue, op, value)
-                    : entry.SearchText.Contains(token, StringComparison.OrdinalIgnoreCase)
-            };
-        }
-
-        private static string Unquote(string value)
-        {
-            if (value.Length >= 2 && value.StartsWith('"') && value.EndsWith('"'))
-            {
-                return value[1..^1];
-            }
-
-            return value;
-        }
-
-        private static bool CompareString(string source, string op, string value)
-        {
-            return op switch
-            {
-                "=" => string.Equals(source, value, StringComparison.OrdinalIgnoreCase),
-                "!=" => !string.Equals(source, value, StringComparison.OrdinalIgnoreCase),
-                ":" => source.Contains(value, StringComparison.OrdinalIgnoreCase),
-                _ => source.Contains(value, StringComparison.OrdinalIgnoreCase)
-            };
-        }
-
-        private static bool CompareInt(int source, string op, string value)
-        {
-            if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return false;
-            }
-
-            return op switch
-            {
-                "=" => source == parsed,
-                "!=" => source != parsed,
-                ">" => source > parsed,
-                ">=" => source >= parsed,
-                "<" => source < parsed,
-                "<=" => source <= parsed,
-                _ => false
-            };
-        }
-
-        private static bool CompareDouble(double source, string op, string value)
-        {
-            if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return false;
-            }
-
-            return op switch
-            {
-                "=" => Math.Abs(source - parsed) < 0.0001,
-                "!=" => Math.Abs(source - parsed) >= 0.0001,
-                ">" => source > parsed,
-                ">=" => source >= parsed,
-                "<" => source < parsed,
-                "<=" => source <= parsed,
-                _ => false
-            };
+            expression = _parsedQuery;
+            error = _queryParseError;
+            return _cachedQueryIsValid;
         }
 
         private void entriesGrid_SelectionChanged(object sender, EventArgs e)
         {
             if (entriesGrid.CurrentRow?.DataBoundItem is HarTraceEntry selected)
             {
-                requestTextBox.Text = selected.RequestText;
-                requestTextBox.SelectionStart = 0;
-                requestTextBox.SelectionLength = 0;
+                if (requestResponseControl is not null)
+                {
+                    requestResponseControl.RequestTextBox.Text = selected.RequestText;
+                    requestResponseControl.RequestTextBox.SelectionStart = 0;
+                    requestResponseControl.RequestTextBox.SelectionLength = 0;
 
-                responseTextBox.Text = selected.ResponseText;
-                responseTextBox.SelectionStart = 0;
-                responseTextBox.SelectionLength = 0;
+                    requestResponseControl.ResponseTextBox.Text = selected.ResponseText;
+                    requestResponseControl.ResponseTextBox.SelectionStart = 0;
+                    requestResponseControl.ResponseTextBox.SelectionLength = 0;
 
-                requestJwtTextBox.Text = BuildRequestJwtView(selected);
-                requestJwtTextBox.SelectionStart = 0;
-                requestJwtTextBox.SelectionLength = 0;
+                    requestResponseControl.RequestJwtTextBox.Text = BuildRequestJwtView(selected);
+                    requestResponseControl.RequestJwtTextBox.SelectionStart = 0;
+                    requestResponseControl.RequestJwtTextBox.SelectionLength = 0;
 
-                responseJwtTextBox.Text = BuildResponseJwtView(selected);
-                responseJwtTextBox.SelectionStart = 0;
-                responseJwtTextBox.SelectionLength = 0;
+                    requestResponseControl.RequestJavaScriptStackTextBox.Text = selected.JavaScriptStack;
+                    requestResponseControl.RequestJavaScriptStackTextBox.SelectionStart = 0;
+                    requestResponseControl.RequestJavaScriptStackTextBox.SelectionLength = 0;
+
+                    requestResponseControl.ResponseJwtTextBox.Text = BuildResponseJwtView(selected);
+                    requestResponseControl.ResponseJwtTextBox.SelectionStart = 0;
+                    requestResponseControl.ResponseJwtTextBox.SelectionLength = 0;
+                }
+                else
+                {
+                    requestTextBox.Text = selected.RequestText;
+                    requestTextBox.SelectionStart = 0;
+                    requestTextBox.SelectionLength = 0;
+
+                    responseTextBox.Text = selected.ResponseText;
+                    responseTextBox.SelectionStart = 0;
+                    responseTextBox.SelectionLength = 0;
+
+                    requestJwtTextBox.Text = BuildRequestJwtView(selected);
+                    requestJwtTextBox.SelectionStart = 0;
+                    requestJwtTextBox.SelectionLength = 0;
+
+                    responseJwtTextBox.Text = BuildResponseJwtView(selected);
+                    responseJwtTextBox.SelectionStart = 0;
+                    responseJwtTextBox.SelectionLength = 0;
+                }
             }
             else
             {
-                requestTextBox.Clear();
-                responseTextBox.Clear();
-                requestJwtTextBox.Clear();
-                responseJwtTextBox.Clear();
+                if (requestResponseControl is not null)
+                {
+                    requestResponseControl.RequestTextBox.Clear();
+                    requestResponseControl.ResponseTextBox.Clear();
+                    requestResponseControl.RequestJwtTextBox.Clear();
+                    requestResponseControl.RequestJavaScriptStackTextBox.Clear();
+                    requestResponseControl.ResponseJwtTextBox.Clear();
+                }
+                else
+                {
+                    requestTextBox.Clear();
+                    responseTextBox.Clear();
+                    requestJwtTextBox.Clear();
+                    responseJwtTextBox.Clear();
+                }
             }
 
             UpdateTimelineFromHighlights();

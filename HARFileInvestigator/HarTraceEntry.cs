@@ -18,6 +18,9 @@ namespace HARFileInvestigator
         public Dictionary<string, string> AdditionalFields { get; init; } = [];
 
         [Browsable(false)]
+        public string JavaScriptStack { get; init; } = string.Empty;
+
+        [Browsable(false)]
         public string RequestText { get; init; } = string.Empty;
 
         [Browsable(false)]
